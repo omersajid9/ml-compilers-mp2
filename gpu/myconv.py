@@ -19,8 +19,8 @@ class ConvModel(nn.Module):
         # TO DO: Define static shapes here. 
 
         # Precompute output size
-        # self.out_h = ...
-        # self.out_w = ...
+        self.out_h = 1 + (H + 2 * padding - kernel_size) // stride
+        self.out_w = 1 + (W + 2 * padding - kernel_size) // stride
 
         self.weight = nn.Parameter(torch.randn(out_channels, in_channels, kernel_size, kernel_size))
         self.bias = nn.Parameter(torch.zeros(out_channels))
@@ -37,33 +37,47 @@ class ConvModel(nn.Module):
         out_w = self.out_w
 
         # Pad input
-        x_pad = F.pad(x, (P, P, P, P))
+        x_pad = F.pad(x, (P, P, P, P)) # (N, C, H, W)
 
         # TO DO: Convert input (x) into shape (N, out_h*out_w, C*KH*KW). 
         # Refer to Lecture 3 for implementing this operation.
-        
-        # patches = ...
-        # return patches
+        patches = torch.stack([
+            torch.stack([
+                x_pad[:, :, kh: kh + out_h * S: S, kw: kw + out_w * S: S]
+                for kw in range(KW)
+            ], axis=0)
+            for kh in range(KH)
+        ], axis=0) # (KH, KW, N, C, out_h, out_w)
+
+        patches = patches.permute([2, 4, 5, 3, 0, 1]).reshape(N, out_h*out_w, C*KH*KW) # (N, P, C*KH*KW)
+        return patches
 
     def conv2d_manual(self, x):
         N = x.shape[0]
         C_out = self.out_channels
         KH = KW = self.kernel_size
+        out_h, out_w = self.out_h, self.out_w
 
         # TO DO: 1) convert input (x) into shape (N, out_h*out_w, C*KH*KW).
-        # cols = self.im2col_manual(x)          
+        cols = self.im2col_manual(x)
 
         # TO DO: 2) flatten self.weight into shape (C_out, C*KH*KW).
+        w_flat = self.weight.reshape(C_out, -1).t()
 
         # TO DO: 3) perform tiled matmul after required reshaping is done.
+        P = cols.shape[1]
+        out = torch.empty(N, P, C_out, device=x.device) # (N, P, C_out)
+        TILE_P = 512
+        for t in range(0, P, TILE_P):
+            cols_tile = cols[:, t: t + TILE_P, :] # (N, TILE_P, C*KH*KW)
+            out[:, t: t + TILE_P, :] = torch.matmul(cols_tile, w_flat)
 
         # TO DO: 4) Add bias.
+        out = out + self.bias
 
         # TO DO: 5) reshape output into shape (N, C_out, out_h, out_w).
-
-
-
-        #return out
+        out = out.permute([0, 2, 1]).reshape(N, C_out, out_h, out_w)
+        return out
 
     def forward(self, x):
         return self.conv2d_manual(x)

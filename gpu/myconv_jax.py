@@ -23,9 +23,18 @@ def im2col_manual_jax(x, KH, KW, S, P, out_h, out_w):
 
     # TO DO: Convert input (x) into shape (N, out_h*out_w, C*KH*KW). 
     # Refer to Lecture 3 for implementing this operation.
+    patches = jnp.stack([
+        jnp.stack([
+                x_pad[:, :, kh: kh + out_h * S: S, kw: kw + out_w * S: S]
+            for kw in range(KW)
+        ], axis=0)
+        for kh in range(KH)
+    ], axis=0) # (KH, KW, N, C, out_h, out_w)
     
-    # patches = ...
-    # return patches
+    patches = jnp.permute_dims(patches, [2, 4, 5, 3, 0, 1])
+    patches = jnp.reshape(patches, (N, out_h * out_w, C * KH * KW))
+
+    return patches
 
 def conv2d_manual_jax(x, weight, bias, stride=1, padding=1):
     '''
@@ -37,21 +46,30 @@ def conv2d_manual_jax(x, weight, bias, stride=1, padding=1):
     C_out, _, KH, KW = weight.shape
 
     # define your helper variables here
-    # out_h = ...
-    # out_w = ...
+    out_h = 1 + (H + 2 * padding - KH) // stride
+    out_w = 1 + (W + 2 * padding - KW) // stride
     
     # TO DO: 1) convert input (x) into shape (N, out_h*out_w, C*KH*KW).
-    # cols = im2col_manual_jax(x, KH, KW, stride, padding, out_h, out_w)
+    cols = im2col_manual_jax(x, KH, KW, stride, padding, out_h, out_w)
 
     # TO DO: 2) flatten self.weight into shape (C_out, C*KH*KW).
+    w_flat = jnp.transpose(jnp.reshape(weight, (C_out, C * KH * KW)))
 
     # TO DO: 3) perform tiled matmul after required reshaping is done.
+    P = cols.shape[1]
+    out = jnp.zeros((N, P, C_out))
+    TILE_P = 512
+    for t in range(0, P, TILE_P):
+        cols_tile = cols[:, t: t + TILE_P, :] # (N, TILE_P, C*KH*KW)
+        out = out.at[:, t: t + TILE_P, :].set(jnp.matmul(cols_tile, w_flat))
 
     # TO DO: 4) Add bias.
+    out = out + bias # (N, P, C_out)
 
     # TO DO: 5) reshape output into shape (N, C_out, out_h, out_w).
-
-    #return out
+    out = jnp.permute_dims(out, [0, 2, 1])
+    out = jnp.reshape(out, (N, C_out, out_h, out_w))
+    return out
 
 if __name__ == "__main__":
     # Instantiate PyTorch model
