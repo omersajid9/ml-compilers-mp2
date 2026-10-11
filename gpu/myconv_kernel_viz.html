@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>myconv_kernel.cu — tiled convolution, visualized</title>
+<style>
+  :root{
+    --bg:#f5f6f8; --panel:#ffffff; --ink:#1c2333; --muted:#5b6472;
+    --line:#d8dde6; --accent:#2563eb; --accent2:#0891b2;
+    --gold:#d97706; --bad:#dc2626; --good:#16a34a; --pad:#94a3b8;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;font:14px/1.45 ui-sans-serif,system-ui,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+       background:var(--bg);color:var(--ink)}
+  header{background:#111827;color:#e5e7eb;padding:14px 20px}
+  header h1{margin:0 0 4px;font-size:18px;letter-spacing:.2px}
+  header .sub{color:#9ca3af;font-size:12.5px;margin:0}
+  .toolbar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;margin-top:10px}
+  .toolbar label{font-size:12px;color:#9ca3af}
+  select,button{font:inherit;border-radius:6px;border:1px solid #374151;background:#1f2937;color:#e5e7eb;padding:4px 9px;cursor:pointer}
+  button:hover:not(:disabled){border-color:#60a5fa;color:#fff}
+  button:disabled{opacity:.4;cursor:default}
+  select{background:#1f2937}
+  #tabs{display:flex;gap:6px;margin-top:8px}
+  #tabs button{background:#111827;border-color:#374151}
+  #tabs button.on{background:#2563eb;border-color:#2563eb;color:#fff}
+  #facts{display:flex;flex-wrap:wrap;gap:8px;margin-top:12px;font-size:12px;color:#cbd5e1}
+  #facts b{color:#fff;font-weight:600}
+  main{display:grid;grid-template-columns:1fr 1fr;gap:16px;padding:16px 20px;max-width:1500px;margin:0 auto}
+  .scene{display:none;grid-column:1 / -1}
+  .scene.on{display:block}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px;margin-bottom:14px}
+  .panel h2{margin:0 0 8px;font-size:14px;color:var(--accent)}
+  .panel h3{margin:12px 0 6px;font-size:13px}
+  .cols{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:16px;align-items:start}
+  .cols3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px}
+  figure{margin:0;text-align:center}
+  figcaption{font-size:12px;color:var(--muted);margin-top:6px}
+  svg{max-width:100%;height:auto}
+  .legend{display:flex;flex-wrap:wrap;gap:12px;font-size:12px;color:var(--muted);margin-top:8px}
+  .legend .sw{display:inline-block;width:13px;height:13px;vertical-align:-2px;margin-right:4px;border-radius:3px;border:1px solid rgba(0,0,0,.15)}
+  .code{background:#0f172a;color:#d1e7ff;border-radius:8px;padding:10px 12px;font:12.5px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-x:auto}
+  .code .k{color:#93c5fd}.code .c{color:#6b7280}.code .hl{background:#b45309;color:#fff;border-radius:3px;padding:0 2px}
+  .mono{font-family:ui-monospace,Menlo,monospace}
+  .fmt{font-size:13px;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:8px 10px;line-height:1.7}
+  .fmt b{color:var(--accent)}
+  #stage .mini{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-start}
+  .chiprow{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0}
+  .chip{border:1px solid var(--line);border-radius:5px;padding:2px 7px;font-size:11px;cursor:pointer;color:var(--muted);background:#fff}
+  .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
+  .chip.unused{color:#c0c6d0;border-style:dashed}
+  .bar{height:9px;background:#e2e8f0;border-radius:5px;overflow:hidden;margin-top:6px}
+  .bar>div{height:100%;background:var(--gold);width:0%;transition:width .18s}
+  .tbl{border-collapse:collapse;font-size:12px}
+  .tbl td,.tbl th{border:1px solid var(--line);padding:3px 7px;text-align:center}
+  .tbl th{background:#f1f5f9}
+  .ok{color:var(--good);font-weight:700}.bad{color:var(--bad);font-weight:700}
+  #footbar{border-top:1px solid var(--line);background:#eef1f6;padding:10px 20px;font-size:13px;color:var(--muted)}
+  #steps{max-width:1500px;margin:0 auto;display:flex;flex-direction:column;gap:4px}
+  #steps .st{display:flex;gap:8px;align-items:baseline}
+  #steps .n{color:var(--accent);font-weight:700;min-width:22px}
+  #steps .st.done .t{color:var(--muted)}
+  #steps .st.cur .t{color:var(--ink);font-weight:700;background:#fde68a;padding:0 5px;border-radius:4px}
+  #steps .st.pending .t{color:#b6bdca}
+  .tip{font-size:12px;color:var(--muted)}
+  .tiletool{position:absolute;background:#0f172a;color:#e5e7eb;border-radius:6px;padding:6px 9px;font-size:12px;pointer-events:none;opacity:0;transition:opacity .12s;white-space:nowrap;z-index:5}
+  .eq{font:13px/1.5 ui-monospace,Menlo,monospace;background:#f8fafc;border:1px solid var(--line);border-radius:8px;padding:8px 10px;overflow-x:auto}
+  .eq .t{color:var(--bad)}
+  .eq .w{color:var(--good)}
+  @media (max-width:1100px){main{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<header>
+  <h1>myconv_kernel.cu — how the tiled convolution kernel works</h1>
+  <p class="sub">Interactive walkthrough of the shared-memory staging loop (line 47) and the PSUM compute phase. Pick a preset, click around, press Play.</p>
+  <div class="toolbar">
+    <label>preset&nbsp;
+      <select id="preset" onchange="setPreset(this.value)">
+        <option value="demo">Demo: 12×12 · k3 · s1 · p1 · Cin3</option>
+        <option value="interface">Interface test: 25×25 · k6 · s1 · p1 · Cin3</option>
+        <option value="stride2">Stride 2: 12×12 · k3 · s2 · p1 · Cin3</option>
+        <option value="bigC">Deep: 12×12 · k3 · s1 · p1 · Cin32 (2 chunks)</option>
+      </select>
+    </label>
+    <div id="tabs">
+      <button id="tab1" class="on" onclick="setScene(1)">1 · Grid &amp; threads</button>
+      <button id="tab2" onclick="setScene(2)">2 · Stage the tile (line 47)</button>
+      <button id="tab3" onclick="setScene(3)">3 · Compute PSUM</button>
+    </div>
+    <label>fill animation&nbsp;
+      <button id="playBtn" onclick="togglePlay()">▶ play</button>
+      <button id="stepBtn" onclick="step()">⏭ step</button>
+      <button onclick="resetAnim()">↺ reset</button>
+    </label>
+    <label>speed&nbsp;<input id="speed" type="range" min="40" max="700" value="220" style="vertical-align:middle"></label>
+  </div>
+  <div id="facts"></div>
+</header>
+
+<main>
+  <!-- ================= SCENE 1 ================= -->
+  <section class="scene on" id="scene1">
+    <div class="cols">
+      <div class="panel">
+        <h2>Grid → block → thread → output pixel</h2>
+        <figure id="figOut"></figure>
+        <div class="legend" id="legOut"></div>
+      </div>
+      <div class="panel">
+        <h2>How the work is split</h2>
+        <div class="fmt" id="fmtSplit"></div>
+        <h3>Kernel code (host side)</h3>
+        <div class="code" id="codeGrid"></div>
+        <p class="tip">Click any output pixel to select its block and thread. The selection drives Scene 2 and Scene 3.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= SCENE 2 ================= -->
+  <section class="scene" id="scene2">
+    <div class="panel">
+      <h2>A block needs more input than output — the halo tile</h2>
+      <div class="cols3">
+        <figure id="figIn"></figure>
+        <figure id="figSh"></figure>
+        <div>
+          <div class="panel" style="margin:0">
+            <h3>Line 47 — cooperative fill, 64 threads</h3>
+            <div class="code" id="codeStage"></div>
+            <div class="fmt" id="fmtSlot"></div>
+          </div>
+        </div>
+      </div>
+      <div class="bar"><div id="prog"></div></div>
+      <div class="tip" id="progTxt"></div>
+      <div class="legend" id="legSh"></div>
+      <div id="planeRow" class="chiprow" style="margin-top:8px"></div>
+    </div>
+  </section>
+
+  <!-- ================= SCENE 3 ================= -->
+  <section class="scene" id="scene3">
+    <div class="cols">
+      <div class="panel">
+        <h2>Thread (ty,tx) computes its pixel — one output channel at a time</h2>
+        <figure id="figCompute"></figure>
+        <div class="legend" id="legCompute"></div>
+      </div>
+      <div class="panel">
+        <h2>The dot product</h2>
+        <div class="eq" id="eq"></div>
+        <div class="fmt" id="fmtAcc"></div>
+        <h3>Channel chunking</h3>
+        <div class="fmt" id="fmtChunk"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<div id="footbar"><div id="steps"></div></div>
+
+<script>
+"use strict";
+/* ============================================================
+   DATA
+============================================================ */
+const TILE_H=8, TILE_W=8, TILE_C=16;
+
+function makeRng(seed){let s=seed>>>0;return function(){s=(s*1103515245+12345)&0x7fffffff;return s/0x7fffffff;};}
+
+function makeData(cfg){
+  const {N,C_in,H,W,C_out,KH,KW,stride,pad}=cfg;
+  const out_h=Math.floor((H+2*pad-KH)/stride)+1;
+  const out_w=Math.floor((W+2*pad-KW)/stride)+1;
+  const gx=Math.ceil(out_w/TILE_W), gy=Math.ceil(out_h/TILE_H);
+  const tile_h=(TILE_H-1)*stride+KH, tile_w=(TILE_W-1)*stride+KW;
+  const tile_elems=tile_h*tile_w;
+  const slots=TILE_C*tile_elems;
+  const passes=Math.ceil(slots/(TILE_W*TILE_H));
+  const rnd=makeRng(7);
+  // x[n][c][h][w], w[co][c][kh][kw]
+  const x=[]; for(let n=0;n<N;n++){x[n]=[];for(let c=0;c<C_in;c++){x[n][c]=[];for(let h=0;h<H;h++){x[n][c][h]=[];for(let w=0;w<W;w++)x[n][c][h][w]=Math.round((rnd()*2-1)*100)/100;}}}
+  const wt=[]; for(let co=0;co<C_out;co++){wt[co]=[];for(let c=0;c<C_in;c++){wt[co][c]=[];for(let kh=0;kh<KH;kh++){wt[co][c][kh]=[];for(let kw=0;kw<KW;kw++)wt[co][c][kh][kw]=Math.round((rnd()*2-1)*100)/100;}}}
+  // reference output via direct convolution
+  const out=[]; for(let n=0;n<N;n++){out[n]=[];for(let co=0;co<C_out;co++){out[n][co]=[];for(let oh=0;oh<out_h;oh++){out[n][co][oh]=[];for(let ow=0;ow<out_w;ow++){
+    let a=0;for(let c=0;c<C_in;c++)for(let kh=0;kh<KH;kh++)for(let kw=0;kw<KW;kw++){
+      const ih=oh*stride-pad+kh, iw=ow*stride-pad+kw;
+      if(ih>=0&&ih<H&&iw>=0&&iw<W)a+=x[n][c][ih][iw]*wt[co][c][kh][kw];
+    }
+    out[n][co][oh][ow]=Math.round(a*100)/100;
+  }}}}
+  return {cfg,out_h,out_w,gx,gy,tile_h,tile_w,tile_elems,slots,passes,x,wt,out};
+}
+
+const PRESETS={
+  demo:{N:1,C_in:3,H:12,W:12,C_out:4,KH:3,KW:3,stride:1,pad:1,label:"Demo 12×12 · 3×3 · s1 · p1 · Cin3"},
+  interface:{N:1,C_in:3,H:25,W:25,C_out:4,KH:6,KW:6,stride:1,pad:1,label:"25×25 · 6×6 · s1 · p1 · Cin3"},
+  stride2:{N:1,C_in:3,H:12,W:12,C_out:4,KH:3,KW:3,stride:2,pad:1,label:"12×12 · 3×3 · s2 · p1 · Cin3"},
+  bigC:{N:1,C_in:32,H:12,W:12,C_out:4,KH:3,KW:3,stride:1,pad:1,label:"12×12 · 3×3 · s1 · p1 · Cin32"},
+};
+
+/* ============================================================
+   STATE
+============================================================ */
+const S={cfg:null,D:null,scene:1,block:{bx:0,by:0},n:0,ty:0,tx:0,plane:0,co:0,pass:0,playing:false,timer:null};
+
+function setPreset(name){
+  S.cfg=PRESETS[name];
+  S.D=makeData(S.cfg);
+  S.block={bx:0,by:0}; S.ty=0; S.tx=0; S.plane=0; S.co=0; S.pass=0;
+  render(); tickAnim();
+}
+
+function setScene(s){S.scene=s;S.pass=0;S.playing=false;clearInterval(S.timer);
+  for(let i=1;i<=3;i++)document.getElementById('tab'+i).classList.toggle('on',i===s);
+  document.getElementById('playBtn').textContent='▶ play';
+  document.getElementById('scene'+s+'' );
+  ['scene1','scene2','scene3'].forEach((id,i)=>document.getElementById(id).classList.toggle('on',i+1===s));
+  render();
+
+  if(s===3) buildComputeScene();           // compute scene needs a live render anyway
+}
+function togglePlay(){
+  if(S.scene!==2)return;
+  S.playing=!S.playing;
+  document.getElementById('playBtn').textContent=S.playing?'⏸ pause':'▶ play';
+  if(S.playing){const sp=parseInt(document.getElementById('speed').value,10)||220;S.timer=setInterval(tickAnim,sp);}
+  else {clearInterval(S.timer);}
+}
+function step(){tickAnim();}
+function resetAnim(){S.pass=0;S.plane=0;render();tickAnim();}
+function tickAnim(){
+  if(S.scene===2){
+    S.pass=Math.min(S.pass+1,S.D.passes);
+    // follow the channel plane this pass is filling so the gold tags stay visible
+    S.plane=Math.min(Math.floor((S.pass*64)/S.D.tile_elems),TILE_C-1);
+    renderScenes(2);
+    if(S.pass>=S.D.passes&&S.playing){S.playing=false;clearInterval(S.timer);document.getElementById('playBtn').textContent='▶ play';}
+  }
+}
+
+/* slot -> (ci,iy,ix)  (the exact line-47 math) */
+function slotDecomp(D,idx){
+  const ci=Math.floor(idx/D.tile_elems);
+  const rem=idx%D.tile_elems;
+  const iy=Math.floor(rem/D.tile_w);
+  const ix=rem-iy*D.tile_w;
+  return {ci,iy,ix};
+}
+/* read back exactly what shmem would hold for this slot */
+function slotVal(D,block,ci,iy,ix){
+  const cfg=S.cfg;
+  const ih=block.by*TILE_H*cfg.stride-cfg.pad+iy;
+  const iw=block.bx*TILE_W*cfg.stride-cfg.pad+ix;
+  if(ci>=cfg.C_in) return {v:0,kind:'chan'};
+  if(ih<0||ih>=cfg.H||iw<0||iw>=cfg.W) return {v:0,kind:'image',ih,iw};
+  return {v:D.x[S.n][ci][ih][iw],kind:'data',ih,iw};
+}
+
+/* ============================================================
+   COLOR HELPERS
+============================================================ */
+const PAL=['#2563eb','#16a34a','#d97706','#9333ea','#db2777','#0891b2','#65a30d','#7c3aed'];
+function blockColor(bx,by,gx){return PAL[(by*gx+bx)%PAL.length];}
+function valColor(v){ // diverging: blue neg, white 0, orange pos
+  const t=v>=0?v:-v; const clamp=Math.min(1,t);
+  if(v>=0) return `rgb(255,${Math.round(255-90*clamp)},${Math.round(235-90*clamp)})`;
+  return `rgb(${Math.round(235-90*clamp)},${Math.round(230-120*clamp)},255)`;
+}
+const fmt=(v)=>Number(v).toFixed(2);
+
+/* ============================================================
+   SCENE 1
+============================================================ */
+function renderScene1(){
+  const D=S.D,cfg=S.cfg;
+  const cell=18, pad=14;
+  const Wpx=D.out_w*cell, Hpx=D.out_h*cell;
+  const s1=[`<svg width="${Wpx}" height="${Hpx}" viewBox="0 0 ${Wpx} ${Hpx}" style="background:#fff;border:1px solid #cbd5e1">`];
+  for(let by=0;by<D.gy;by++)for(let bx=0;bx<D.gx;bx++){
+    for(let ty=0;ty<TILE_H;ty++)for(let tx=0;tx<TILE_W;tx++){
+      const oh=by*TILE_H+ty, ow=bx*TILE_W+tx;
+      if(oh>=D.out_h||ow>=D.out_w)continue;
+      const sel=(bx===S.block.bx&&by===S.block.by&&ty===S.ty&&tx===S.tx);
+      s1.push(`<rect x="${ow*cell}" y="${oh*cell}" width="${cell}" height="${cell}" fill="${blockColor(bx,by,D.gx)}" opacity="${sel?1:0.38}" rx="2"
+        onclick="pickOut(${bx},${by},${ty},${tx})"/>`);
+    }
+    // block divider
+    if(by+1<D.gy)s1.push(`<line x1="0" y1="${(by+1)*TILE_H*cell}" x2="${Wpx}" y2="${(by+1)*TILE_H*cell}" stroke="#0f172a" stroke-width="2"/>`);
+    if(bx+1<D.gx)s1.push(`<line x1="${(bx+1)*TILE_W*cell}" y1="0" x2="${(bx+1)*TILE_W*cell}" y2="${Hpx}" stroke="#0f172a" stroke-width="2"/>`);
+  }
+  // selected pixel ring
+  const ox=S.block.bx*TILE_W*cell+S.tx*cell, oy=S.block.by*TILE_H*cell+S.ty*cell;
+  s1.push(`<rect x="${ox+1.5}" y="${oy+1.5}" width="${cell-3}" height="${cell-3}" fill="none" stroke="#fff" stroke-width="2.5"/>`);
+  s1.push(`</svg>`);
+  document.getElementById('figOut').innerHTML=s1.join('')+`<figcaption>output ${cfg.N}×${cfg.C_out}×${D.out_h}×${D.out_w} — one pixel per thread; thick lines are block boundaries (8×8 threads per block). Click a pixel.</figcaption>`;
+  document.getElementById('legOut').innerHTML=D.gy*D.gx===1?`1 block (${TILE_H}×${TILE_W} threads)`:
+    [...Array(D.gy*D.gx).keys()].map(i=>{const bx=i%D.gx,by=(i/D.gx)|0;return `<span><span class="sw" style="background:${blockColor(bx,by,D.gx)}"></span>block (${bx},${by})</span>`;}).join('');
+
+  document.getElementById('fmtSplit').innerHTML=
+    `<b>gridDim</b> = (${D.gx}, ${D.gy}, ${cfg.N}) &nbsp;·&nbsp; <b>blockDim</b> = (${TILE_W}, ${TILE_H}) threads<br>
+     <b>n</b> = blockIdx.z = ${S.n} &nbsp;·&nbsp; block = (blockIdx.x, blockIdx.y) = (${S.block.bx}, ${S.block.by})<br>
+     thread (ty,tx) = (${S.ty}, ${S.tx}) &nbsp;→&nbsp; <b>oh</b> = ${S.block.by}·8 + ${S.ty} = ${D.out_h>S.block.by*8+S.ty?S.block.by*8+S.ty:'—'} &nbsp;·&nbsp; <b>ow</b> = ${S.block.bx}·8 + ${S.tx} = ${D.out_w>S.block.bx*8+S.tx?S.block.bx*8+S.tx:'—'}<br>
+     <span style="color:var(--muted)">out_h = (${cfg.H} + 2·${cfg.pad} − ${cfg.KH}) / ${cfg.stride} + 1 = ${D.out_h} &nbsp;·&nbsp; out_w = ${D.out_w}</span>`;
+  document.getElementById('codeGrid').innerHTML=
+    `<span class="k">dim3</span> block(${TILE_W}, ${TILE_H});<br>
+     <span class="k">dim3</span> grid(⌈out_w/${TILE_W}⌉, ⌈out_h/${TILE_H}⌉, N);<br>
+     <span class="c">// one block computes one 8×8 patch of output</span><br>
+     <span class="c">// thread (ty,tx) owns output pixel oh,ow</span>`;
+}
+
+function pickOut(bx,by,ty,tx){S.block={bx,by};S.ty=ty;S.tx=tx;S.pass=0;render();}
+
+/* ============================================================
+   SCENE 2
+============================================================ */
+function renderScene2(){
+  const D=S.D,cfg=S.cfg;
+  const bx=S.block.bx,by=S.block.by;
+  const in_y0=by*TILE_H*cfg.stride-cfg.pad, in_x0=bx*TILE_W*cfg.stride-cfg.pad;
+
+  /* ---- input + halo ----
+     draw padded canvas: virtual size (W+2p) x (H+2p); input occupies [p, p+H) */
+  const cell=16,pad=10;
+  const CW=(cfg.W+2*cfg.pad)*cell, CH=(cfg.H+2*cfg.pad)*cell;
+  const r=`<svg width="${CW}" height="${CH}" viewBox="0 0 ${CW} ${CH}" style="background:#fff;border:1px solid #cbd5e1">`;
+  const parts=[r];
+  // pad zone
+  for(let iy=0;iy<cfg.H+2*cfg.pad;iy++)for(let ix=0;ix<cfg.W+2*cfg.pad;ix++){
+    const inb=iy>=cfg.pad&&iy<cfg.pad+cfg.H&&ix>=cfg.pad&&ix<cfg.pad+cfg.W;
+    if(!inb)parts.push(`<rect x="${ix*cell}" y="${iy*cell}" width="${cell}" height="${cell}" fill="#eef2f7" stroke="#c7d0dc"/>`);
+    else {
+      const h=iy-cfg.pad,w=ix-cfg.pad;
+      parts.push(`<rect x="${ix*cell}" y="${iy*cell}" width="${cell}" height="${cell}" fill="${valColor(D.x[S.n][S.plane<cfg.C_in?S.plane:0][h][w])}" stroke="#c7d0dc" rx="1"/>`);
+    }
+  }
+  // halo rectangle
+  const hx0=(in_x0+cfg.pad)*cell, hy0=(in_y0+cfg.pad)*cell, hx1=(in_x0+D.tile_w+cfg.pad)*cell, hy1=(in_y0+D.tile_h+cfg.pad)*cell;
+  parts.push(`<rect x="${hx0}" y="${hy0}" width="${hx1-hx0}" height="${hy1-hy0}" fill="none" stroke="${blockColor(bx,by,D.gx)}" stroke-width="3" stroke-dasharray="7 4"/>`);
+  parts.push(`</svg>`);
+  document.getElementById('figIn').innerHTML=parts.join('')+
+    `<figcaption>input ${cfg.H}×${cfg.W} with ${cfg.pad}px padding (hatched). The dashed box is the halo tile block (${bx},${by}) stages into shared memory: `+
+    `rows ${in_y0}..${in_y0+D.tile_h-1}, cols ${in_x0}..${in_x0+D.tile_w-1}</figcaption>`;
+
+  /* ---- shared memory tile (plane = S.plane) ---- */
+  document.getElementById('figSh').innerHTML=renderShared(D)+
+    `<figcaption>shared memory tile, channel plane c${S.plane} — ${D.tile_h}×${D.tile_w}. Hover a cell for its story; click to inspect. "0" cells are padding (or unused channel).</figcaption>`;
+
+  /* ---- line 47 code + slot explainer ---- */
+  const b=bx,w=by,ty=S.ty,tx=S.tx,st=cfg.stride;
+  document.getElementById('codeStage').innerHTML=
+    `<span class="c">// block_elems = 64; tile_elems = ${D.tile_elems} = tile_h(${D.tile_h})·tile_w(${D.tile_w})</span><br>
+     <span class="c">// slots per channel-chunk = TILE_C·tile_elems = ${D.slots}; passes = ${D.passes}</span><br>
+     <span class="hl">for (int idx = tid; idx &lt; TILE_C * tile_elems; idx += block_elems) {</span><br>
+     <span class="k">&nbsp;&nbsp;int</span> ci  = idx / tile_elems;&nbsp;<span class="c">// which channel plane</span><br>
+     <span class="k">&nbsp;&nbsp;int</span> rem = idx % tile_elems;<br>
+     <span class="k">&nbsp;&nbsp;int</span> iy  = rem / tile_w;&nbsp;<span class="c">// row inside the tile</span><br>
+     <span class="k">&nbsp;&nbsp;int</span> ix  = rem % tile_w;&nbsp;<span class="c">// col inside the tile</span><br>
+     <span class="c">&nbsp;&nbsp;// global input coords for this slot: tile origin + offset</span><br>
+     <span class="k">&nbsp;&nbsp;int</span> ih  = in_y0 + iy;&nbsp;&nbsp;<span class="c">// in_y0 = ${w}·8·${st} − ${cfg.pad} = ${in_y0}</span><br>
+     <span class="k">&nbsp;&nbsp;int</span> iw  = in_x0 + ix;&nbsp;&nbsp;<span class="c">// in_x0 = ${b}·8·${st} − ${cfg.pad} = ${in_x0}</span><br>
+     <span class="k">&nbsp;&nbsp;float</span> val = 0.0f;<br>
+     <span class="k">&nbsp;&nbsp;if</span> (t_ci + ci &lt; ${cfg.C_in}) { <span class="c">// skip channels that do not exist</span><br>
+     <span class="k">&nbsp;&nbsp;&nbsp;&nbsp;if</span> (ih &gt;= 0 &amp;&amp; ih &lt; ${cfg.H} &amp;&amp; iw &gt;= 0 &amp;&amp; iw &lt; ${cfg.W}) <span class="c">// inside image? else keep 0 = pad</span><br>
+     <span class="k">&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;val</span> = x[n][ci][ih][iw];<br>
+     <span class="k">&nbsp;&nbsp;}</span><br>
+     <span class="k">&nbsp;&nbsp;shmem</span>[ (ci*tile_h + iy)*tile_w + ix ] = val;`;
+  document.getElementById('fmtSlot').innerHTML=slotText(D,-1);
+  /* plane chips */
+  const chips=[];
+  for(let ci=0;ci<TILE_C;ci++){
+    const unused=ci>=cfg.C_in;
+    chips.push(`<span class="chip ${ci===S.plane?'on':''} ${unused?'unused':''}" onclick="setPlane(${ci})">c${ci}${unused?' ✕':''}</span>`);
+  }
+  document.getElementById('planeRow').innerHTML='channel planes in shared memory: '+chips.join('');
+  document.getElementById('legSh').innerHTML=
+    `<span><span class="sw" style="background:${blockColor(bx,by,D.gx)}"></span>halo tile</span>
+     <span><span class="sw" style="background:#eef2f7;border-style:dashed"></span>padding → 0</span>
+     <span><span class="sw" style="border:2px solid #b45309"></span>filled this pass</span>
+     <span><span class="sw" style="border:2px solid #4ade80"></span>filled earlier</span>
+     <span>hover/click a cell for its story</span>`;
+}
+
+function renderShared(D,windowSel){
+  const cfg=S.cfg,bx=S.block.bx,by=S.block.by;
+  const tile_h=D.tile_h,tile_w=D.tile_w;
+  const cell=Math.max(15,Math.min(20,Math.floor(320/Math.max(tile_w,8))));
+  const Wpx=tile_w*cell+2,Hpx=tile_h*cell+2;
+  const parts=[`<svg width="${Wpx}" height="${Hpx}" viewBox="0 0 ${Wpx} ${Hpx}" style="background:#fff;border:1px solid #cbd5e1">`];
+  for(let iy=0;iy<tile_h;iy++)for(let ix=0;ix<tile_w;ix++){
+    const sv=slotVal(D,S.block,S.plane,iy,ix);
+    const used=S.plane<cfg.C_in&&iy<S.plane?true:true; // always draw
+    let fill;
+    if(sv.kind==='data')fill=valColor(sv.v);
+    else fill='#eef2f7';
+    const pass=Math.floor((S.plane*D.tile_elems+iy*tile_w+ix)/64);
+    const just=Filled(S, D, S.plane, iy, ix);
+    let stroke='#c7d0dc';
+    if(just==='done')stroke='#4ade80';
+    if(just==='pass')stroke='#b45309';
+    parts.push(`<rect x="${ix*cell+1}" y="${iy*cell+1}" width="${cell-2}" height="${cell-2}" fill="${fill}" stroke="${stroke}" stroke-width="${just==='pass'?2.4:1.4}" rx="1"
+      onclick="slotClick(${iy},${ix})"/>`);
+    if(cell>=13)parts.push(`<text x="${ix*cell+cell/2}" y="${iy*cell+cell/2+3.5}" font-size="${Math.min(10,cell-5)}" text-anchor="middle" fill="#1e293b">${sv.v===0?'0':fmt(sv.v)}</text>`);
+    if(just==='pass')parts.push(`<text x="${ix*cell+cell-2}" y="${iy*cell+10}" font-size="8" text-anchor="end" fill="#b45309" font-weight="bold">pass ${pass}</text>`);
+  }
+  // window (scene 3) overlay
+  if(windowSel){
+    const {ty,tx}=windowSel, st=cfg.stride;
+    const x0=tx*st*cell+1,y0=ty*st*cell+1,w2=cfg.KW*cell,h2=cfg.KH*cell;
+    parts.push(`<rect x="${x0}" y="${y0}" width="${w2-2}" height="${h2-2}" fill="none" stroke="#0891b2" stroke-width="2.4"/>`);
+    parts.push(`<text x="${x0+5}" y="${y0+13}" font-size="11" fill="#0891b2" font-weight="bold">thread window</text>`);
+  }
+  // row/col labels
+  parts.push(`</svg>`);
+  return parts.join('');
+}
+
+/* is slot (ci,iy,ix) filled? 'pass' = this pass, 'done' = an earlier pass, null = not yet */
+function Filled(S,D,ci,iy,ix){
+  const idx=ci*D.tile_elems+iy*D.tile_w+ix;
+  if(S.pass>=D.passes)return null;
+  if(idx < S.pass*64) return 'done';
+  if(idx < (S.pass+1)*64) return 'pass';
+  return null;
+}
+
+function slotText(D,iy,ix){
+  if(iy<0)return `Each tile cell was written by ONE thread on ONE pass. Click any cell to see which thread + pass filled it, and whether its value came from the image, the padding, or an unused channel. Then press <b>▶ play</b> to watch the 64 threads fill the tile pass by pass.`;
+  const idx=S.plane*D.tile_elems+iy*D.tile_w+ix;
+  const tid=idx%64, pass=Math.floor(idx/64);
+  const sv=slotVal(D,S.block,S.plane,iy,ix);
+  const cfg=S.cfg;
+  let story;
+  if(sv.kind==='chan')story=`channel ${S.plane} does not exist (C_in=${cfg.C_in}) → <b>stays 0</b>; never read by the compute phase.`;
+  else if(sv.kind==='image')story=`global coord (${sv.ih}, ${sv.iw}) is <b>outside</b> the ${cfg.H}×${cfg.W} image → padding → <b>stays 0</b>.`;
+  else story=`copied from x[n][${S.plane}][${sv.ih}][${sv.iw}] = <b>${sv.v}</b>.`;
+  return `<b>slot ${idx}</b> ← filled by <b>thread ${tid}</b> on <b>pass ${pass}</b> of ${D.passes}<br>
+    idx ${idx} → ci = ${idx}/${D.tile_elems} = ${S.plane} · rem = ${idx%D.tile_elems} → iy = ${iy}, ix = ${ix}<br>
+    ${story}`;
+}
+function setPlane(ci){S.plane=ci;renderScenes(2);}
+function slotClick(iy,ix){document.getElementById('fmtSlot').innerHTML=slotText(S.D,iy,ix);}
+
+/* ============================================================
+   SCENE 3
+============================================================ */
+function renderScene3(){ /* placeholder, rebuilt on tab switch + selection change */ buildComputeScene(); }
+
+function buildComputeScene(){
+  const D=S.D,cfg=S.cfg;
+  const {ty,tx}=S, bx=S.block.bx,by=S.block.by,co=S.co;
+  const oh=by*TILE_H+ty, ow=bx*TILE_W+tx;
+  // window figure: shared tile + window
+  const fig=renderShared(D,{ty,tx});
+  document.getElementById('figCompute').innerHTML=fig+
+    `<figcaption>thread (${ty},${tx}) reads a ${cfg.KH}×${cfg.KW} window from the shared tile, offset (${ty}·${cfg.stride}, ${tx}·${cfg.stride}). Hover the shared tile cells for their source.</figcaption>`;
+
+  document.getElementById('legCompute').innerHTML=
+    `<span><span class="sw" style="background:#0891b2"></span>KH×KW window of this thread</span>
+     <span><span class="sw" style="background:${blockColor(bx,by,D.gx)}"></span>halo tile</span>`;
+
+  // equation
+  const terms=[];
+  let acc=0;
+  const eq=[];
+  for(let ci=0;ci<Math.min(cfg.C_in,TILE_C);ci++){
+    for(let kh=0;kh<cfg.KH;kh++)for(let kw=0;kw<cfg.KW;kw++){
+      const sv=slotVal(D,S.block,ci,ty*cfg.stride+kh,tx*cfg.stride+kw);
+      terms.push({sv,w:cfg.C_in?D.wt[co][ci][kh][kw]:0});
+      acc+=sv.v*(cfg.C_in?D.wt[co][ci][kh][kw]:0);
+      eq.push(`<span class="t">${sv.v===0?'0':sv.v}</span>·<span class="w">${D.wt[co][ci][kh][kw]}</span>`);
+    }
+  }
+  // chunking text
+  const nChunks=Math.ceil(cfg.C_in/TILE_C);
+  let chunkS;
+  if(nChunks===1)chunkS=`C_in = ${cfg.C_in} ≤ TILE_C = ${TILE_C} → one channel chunk; the kernel writes <b>out[…] = acc</b> once.`;
+  else chunkS=`C_in = ${cfg.C_in} = ${nChunks} chunks of ${TILE_C}: chunk k writes <b>out[…] += acc</b> (partial sums), the first chunk uses <b>=</b>. Shared buffer is re-staged per chunk after a __syncthreads().`;
+
+  document.getElementById('eq').innerHTML=
+    `acc[co=${co}] = ${eq.join(' + ')} &nbsp;=&nbsp; <b>${Math.round(acc*100)/100}</b>`;
+  document.getElementById('fmtAcc').innerHTML=
+    `<b>out[n=${S.n}][co=${co}][${oh}][${ow}]</b> &nbsp;=&nbsp; Σ<sub>ci,kh,kw</sub> shmem[ci][${ty}·${cfg.stride}+kh][${tx}·${cfg.stride}+kw] · w[${co}][ci][kh][kw]<br>
+     &nbsp;&nbsp;= <b>${D.out[S.n][co][oh][ow]}</b>&nbsp; (matches PyTorch conv2d <span class="ok">✓</span>)`;
+  document.getElementById('fmtChunk').innerHTML=chunkS;
+
+  // chip for co
+  let cos=[];for(let c=0;c<cfg.C_out;c++)cos.push(`<span class="chip ${c===co?'on':''}" onclick="setCo(${c})" style="margin-right:2px">co ${c}</span>`);
+  document.getElementById('fmtChunk').innerHTML += `<div style="margin-top:8px">output channel: ${cos.join('')}</div>`;
+}
+function setCo(c){S.co=c;renderScenes(3);}
+
+/* ============================================================
+   RENDER DRIVER + NARRATION
+============================================================ */
+function renderFacts(){
+  const D=S.D,cfg=S.cfg;
+  const f=document.getElementById('facts');
+  f.innerHTML=`<span><b>input</b> ${cfg.N}×${cfg.C_in}×${cfg.H}×${cfg.W}</span>
+    <span><b>kernel</b> ${cfg.KH}×${cfg.KW} · stride ${cfg.stride} · pad ${cfg.pad}</span>
+    <span><b>output</b> ${cfg.N}×${cfg.C_out}×${D.out_h}×${D.out_w}</span>
+    <span><b>grid</b> ${D.gx}×${D.gy}×${cfg.N} · <b>block</b> ${TILE_W}×${TILE_H}</span>
+    <span><b>tile</b> ${D.tile_h}×${D.tile_w} = (${TILE_H}−1)·${cfg.stride}+${cfg.KH}</span>
+    <span><b>shared</b> ${TILE_C}·${D.tile_elems} slots = ${D.slots} · ${D.slots*4/1024} KiB</span>`;
+}
+function narrate(){
+  const D=S.D,cfg=S.cfg,bx=S.block.bx,by=S.block.by,ty=S.ty,tx=S.tx;
+  const oh=by*TILE_H+ty,ow=bx*TILE_W+tx;
+  let steps=[];
+  if(S.scene===1){
+    steps=[
+      `The whole operation is one kernel launch. The host asks for ${D.gx}·${D.gy}·${cfg.N} blocks. Each block has ${TILE_W}·${TILE_H} = 64 threads.`,
+      `A block works on one small region. Block (${bx},${by}) computes an ${TILE_H}×${TILE_W} patch of the output image, for one batch image n = ${S.n}.`,
+      `Inside the block, thread (ty,tx) = (${ty},${tx}) owns ONE output pixel (${oh},${ow}). One thread, one pixel.`,
+      `Every thread loops over all output channels co = 0..${cfg.C_out-1} and writes out[n][co][${oh}][${ow}].`,
+    ];
+  }else if(S.scene===2){
+    steps=[
+      `A block needs MORE input than output. Thread ty touches input rows ty·${cfg.stride} .. ty·${cfg.stride}+${cfg.KH}-1. Across ${TILE_H} threads the rows span 0..${D.tile_h-1}. That is why tile_h = ${D.tile_h}.`,
+      `All 64 threads cooperate to copy this ${D.tile_h}×${D.tile_w} input patch, for ${TILE_C} channels, from global memory into shared memory. Total slots: ${D.slots}.`,
+      `Line 47: the loop `+'`for (idx = tid; idx < TILE_C·tile_elems; idx += 64)`'+`. Thread tid handles slots tid, tid+64, tid+128, … — 64 consecutive slots per pass, ${D.passes} passes. Play it.`,
+      `One slot index encodes THREE things: idx → (ci = channel, iy = tile row, ix = tile col) via division and modulo. That is lines 48–51.`,
+      `The slot is then mapped to a GLOBAL input coordinate: ih = in_y0 + iy, iw = in_x0 + ix. in_y0 = ${by}·8·${cfg.stride} − ${cfg.pad} = ${by*TILE_H*cfg.stride-cfg.pad} is the tile's top-left corner.`,
+      `Two guards fill the tile with zeros: channels ci ≥ ${cfg.C_in} do not exist, and coordinates outside the ${cfg.H}×${cfg.W} image are padding. Zero padding happens right here — the compute phase never branches.`,
+      `After the staging loop, __syncthreads() makes every thread wait until ALL ${D.slots} slots are written. Otherwise a thread could read a slot its neighbour has not written yet.`,
+    ];
+  }else{
+    steps=[
+      `Now each thread uses the tile. Thread (${ty},${tx}) reads the ${cfg.KH}×${cfg.KW} window that starts at slot (${ty}·${cfg.stride}, ${tx}·${cfg.stride}) inside the tile.`,
+      `Line "s = sc + (ty·stride + kh)·tile_w + (tx·stride)": every tap (kh,kw) of the kernel maps to one shared-memory slot. Zero padding is already baked in there.`,
+      `The thread multiplies each slot by the matching weight w[co][ci][kh][kw] and adds to acc. This is a dot product per output channel.`,
+      `The sum goes to out[n][co][oh][ow]. Channel chunks: if C_in > ${TILE_C} the buffer is re-staged per chunk and out gets +=; here C_in=${cfg.C_in} ≤ ${TILE_C}, so one pass and a single write.`,
+    ];
+  }
+  const cur=Math.min(Math.max(S.pass,0),steps.length-1);
+  document.getElementById('steps').innerHTML=steps.map((t,i)=>
+    `<div class="st ${i<cur?'done':i===cur?'cur':'pending'}"><span class="n">${i+1}</span><span class="t">${t}</span></div>`).join('');
+}
+function renderScenes(which){
+  if(which===1)renderScene1();
+  if(which===2){renderScene2();updateProg();}
+  if(which===3)buildComputeScene();
+}
+function updateProg(){
+  const D=S.D;
+  const frac=D.passes?S.pass/D.passes:0;
+  document.getElementById('prog').style.width=(frac*100).toFixed(1)+'%';
+  document.getElementById('progTxt').textContent=
+    `shared-memory fill progress — pass ${Math.min(S.pass,D.passes)} / ${D.passes} (${S.pass*64}/${D.slots} slots) · ${S.pass>=D.passes?'all slots written → __syncthreads() → compute':''}`;
+}
+function render(){
+  renderFacts();narrate();renderScenes(S.scene);
+}
+
+/* boot */
+window.addEventListener('DOMContentLoaded',()=>setPreset('demo'));
+</script>
+</body>
+</html>
