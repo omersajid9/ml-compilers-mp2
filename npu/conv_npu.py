@@ -62,14 +62,65 @@ def conv2d(X, W, bias):
         buffer=nl.hbm,
     )
 
-    # Various tiling dimensions (You may want to define more of them)
-    c_in_pmax = nl.tile_size.pmax
+    c_in_pmax = nl.tile_size.pmax # 128
     n_tiles_c_in = in_channels // c_in_pmax
 
-    # Process the images in batches
+    c_out_pmax = nl.tile_size.pmax # 128
+    n_tiles_c_out = out_channels // c_out_pmax
+
+    w_all = nl.ndarray(
+        (filter_height, filter_width, n_tiles_c_out, n_tiles_c_in,
+         nl.par_dim(c_in_pmax), c_out_pmax),
+        dtype=W.dtype,
+        buffer=nl.sbuf,
+    )
+    for i in nl.affine_range(filter_height):
+        for j in nl.affine_range(filter_width):
+            for oc_bt in nl.affine_range(n_tiles_c_out):
+                for ic_bt in nl.affine_range(n_tiles_c_in):
+                    w_io = nl.ndarray((c_out_pmax, c_in_pmax), dtype=W.dtype, buffer=nl.sbuf)
+                    nisa.dma_copy(
+                        dst=w_io,
+                        src=W[oc_bt * c_out_pmax:(oc_bt + 1) * c_out_pmax,
+                              ic_bt * c_in_pmax:(ic_bt + 1) * c_in_pmax,
+                              i, j]
+                    )
+                    w_all[i, j, oc_bt, ic_bt] = nl.transpose(w_io)
+
+    bias_re = bias.reshape((n_tiles_c_out, c_out_pmax, 1))
+
     for b in nl.affine_range(batch_size):
-        raise RuntimeError("Please fill your implementation of computing convolution"
-                           " of X[b] with the weights W and bias b and store the result in X_out[b]")
+        for row in nl.affine_range(out_height):
+            x_all = nl.ndarray(
+                (filter_height, filter_width, n_tiles_c_in,
+                 nl.par_dim(c_in_pmax), out_width),
+                dtype=X.dtype,
+                buffer=nl.sbuf,
+            )
+            for i in nl.affine_range(filter_height):
+                for j in nl.affine_range(filter_width):
+                    for ic_bt in nl.affine_range(n_tiles_c_in):
+                        x_all[i, j, ic_bt] = nl.load(
+                            X[b,
+                              ic_bt * c_in_pmax:(ic_bt + 1) * c_in_pmax,
+                              row + i,
+                              j:j + out_width])
+
+            for oc_bt in nl.affine_range(n_tiles_c_out):
+                res_psum = nl.zeros((c_out_pmax, out_width), nl.float32, buffer=nl.psum)
+                for i in nl.affine_range(filter_height):
+                    for j in nl.affine_range(filter_width):
+                        for ic_bt in nl.affine_range(n_tiles_c_in):
+                            res_psum += nl.matmul(
+                                w_all[i, j, oc_bt, ic_bt],
+                                x_all[i, j, ic_bt],
+                                transpose_x=True)
+                res_sb = nl.copy(res_psum, dtype=X_out.dtype)
+                bias_tile = nl.load(bias_re[oc_bt]) # (c_out_pmax, 1)
+                res_sb = nl.add(res_sb, bias_tile)
+                nl.store(X_out[b,
+                               oc_bt * c_out_pmax:(oc_bt + 1) * c_out_pmax,
+                               row, :],
+                         value=res_sb)
 
     return X_out
-
